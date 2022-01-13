@@ -8,35 +8,41 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"time"
 )
 
-func work_summary(client *Client, operation string, failed bool, stderr bool, spendTime bool) {
+func subMeta(client *Client, operation string, failed bool, stderr bool, spendTime bool, table *TableStruct,
+	indent bool, subflow bool) {
+
 	params := url.Values{}
 	//params.Add("includeKey", "executionStatus")
 	resp, _ := client.Metadata(operation, params)
 	var mtr = MetadataTableResponse{Metadata: resp}
-	tabbb := new(TableStruct)
-	tabbb.Header = []string{"Call-Name", "Status"}
-	if spendTime {
-		tabbb.Header = append(tabbb.Header, "TimeConsuming")
-	}
-	if stderr {
-		tabbb.Header = append(tabbb.Header, "Stderr")
-	}
-	tabbb.Data = [][]string{}
-	//fmt.Println(mtr.Metadata.WorkflowRoot)
+
 	for k, v := range mtr.Metadata.Calls {
 		//fmt.Println(k)
 		wf_name, _ := regexp.Compile("[^.]+\\.")
 		real_name := wf_name.ReplaceAllString(k, "")
+
+		subNum := 1
+		if indent {
+			space := ""
+			for i := 0; i < subNum; i++ {
+				space += " "
+			}
+			real_name = space + "\\_ " + real_name
+		}
 		for _, v1 := range v {
 			//fmt.Println(k, v1.ExecutionStatus, v1.Stderr)
 			if failed && v1.ExecutionStatus != "Failed" {
 				continue
 			}
+			add_row := []string{real_name, v1.ExecutionStatus}
+
 			if v1.Stderr == "" {
 				if v1.SubWorkflowID == "" {
-					v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name, "shard-"+fmt.Sprintf("%d", v1.ShardIndex))
+					v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name,
+						"shard-"+fmt.Sprintf("%d", v1.ShardIndex))
 				} else {
 					v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name,
 						"shard-"+fmt.Sprintf("%d", v1.ShardIndex),
@@ -45,23 +51,49 @@ func work_summary(client *Client, operation string, failed bool, stderr bool, sp
 					)
 				}
 			}
-			add_row := []string{real_name, v1.ExecutionStatus}
+
 			if spendTime {
+				if v1.End.IsZero() {
+					v1.End = time.Now()
+				}
 				add_row = append(add_row, fmt.Sprintf("%v", v1.End.Sub(v1.Start)))
 			}
 			if stderr {
 				add_row = append(add_row, v1.Stderr)
 			}
-			tabbb.Data = append(tabbb.Data, add_row)
+			table.Data = append(table.Data, add_row)
+			if v1.SubWorkflowID != "" {
+				subNum += 1
+				if subflow {
+					subMeta(client, v1.SubWorkflowID, failed, stderr, spendTime, table, true, subflow)
+				}
+			} else {
+				subNum -= 1
+			}
 		}
 	}
-	tabbb.showTable()
+}
+
+func work_summary(client *Client, operation string, failed bool, stderr bool, spendTime bool, subflow bool) {
+
+	table := new(TableStruct)
+	table.Header = []string{"Call-Name", "Status"}
+	if spendTime {
+		table.Header = append(table.Header, "TimeConsuming")
+	}
+	if stderr {
+		table.Header = append(table.Header, "Stderr")
+	}
+	table.Data = [][]string{}
+	//fmt.Println(mtr.Metadata.WorkflowRoot)
+	subMeta(client, operation, failed, stderr, spendTime, table, false, subflow)
+	table.showTable()
 }
 
 func main() {
 	client := Client{}
 
-	var Version = "v1.0"
+	var Version = "v1.1"
 	app := &cli.App{
 		Name:  "Cromwell-OM",
 		Usage: "OM for Cromwell Server",
@@ -69,11 +101,16 @@ func main() {
 			&cli.StringFlag{
 				Name:  "host",
 				Value: "http://127.0.0.1:8000",
-				Usage: "Url for your Cromwell Server",
+				Usage: "Url for your Cromwell Server. You can also write to cromwell-om.conf using json format",
 			},
 		},
 		Before: func(c *cli.Context) error {
-			client.Setup(c.String("host"))
+			conf := readConfig()
+			host := conf.Host
+			if conf.Host == "" || c.String("host") != "http://127.0.0.1:8000" {
+				host = c.String("host")
+			}
+			client.Setup(host)
 			return nil
 		},
 		Commands: []*cli.Command{
@@ -97,9 +134,15 @@ func main() {
 					sr, _ := client.Status(c.String("workid"))
 					params := url.Values{}
 					params.Add("includeKey", "failures")
-					resp, _ := client.Metadata(c.String("operation"), params)
+					resp, _ := client.Metadata(c.String("workid"), params)
 					var mtr = MetadataTableResponse{Metadata: resp}
-					fmt.Printf("%s\t%s\n%+v\n", sr.ID, sr.Status, mtr.Metadata.Failures)
+					failure := fmt.Sprintf("%+v", mtr.Metadata.Failures)
+					if failure == "[]" {
+						failure = ""
+					} else {
+						failure = "\n" + failure + "\n"
+					}
+					fmt.Printf("%s\t%s\n%s", sr.ID, sr.Status, failure)
 					return nil
 				},
 			},
@@ -112,10 +155,11 @@ func main() {
 					&cli.BoolFlag{Name: "failed", Aliases: []string{"f"}, Usage: "Filter failed tasks"},
 					&cli.BoolFlag{Name: "stderr", Aliases: []string{"e"}, Usage: "Show the stderr of the task"},
 					&cli.BoolFlag{Name: "time", Aliases: []string{"t"}, Usage: "Show the time consuming of the task"},
+					&cli.BoolFlag{Name: "subflow", Aliases: []string{"s"}, Usage: "Show the sub workflow"},
 				},
 				Action: func(c *cli.Context) error {
 					work_summary(&client, c.String("workid"), c.Bool("failed"),
-						c.Bool("stderr"), c.Bool("time"),
+						c.Bool("stderr"), c.Bool("time"), c.Bool("subflow"),
 					)
 					return nil
 				},
