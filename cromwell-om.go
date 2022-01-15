@@ -40,16 +40,8 @@ func subMeta(client *Client, operation string, failed bool, stderr bool, spendTi
 			add_row := []string{real_name, v1.ExecutionStatus}
 
 			if v1.Stderr == "" {
-				if v1.SubWorkflowID == "" {
-					v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name,
-						"shard-"+fmt.Sprintf("%d", v1.ShardIndex))
-				} else {
-					v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name,
-						"shard-"+fmt.Sprintf("%d", v1.ShardIndex),
-						real_name,
-						v1.SubWorkflowID,
-					)
-				}
+				v1.Stderr = path.Join(mtr.Metadata.WorkflowRoot, "call-"+real_name,
+					"shard-"+fmt.Sprintf("%d", v1.ShardIndex))
 			}
 
 			if spendTime {
